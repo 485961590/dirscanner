@@ -1,6 +1,43 @@
-读取参数
-→ 解析 base URL
-→ 读取字典
-→ 创建 HTTP Client
-→ 并发请求
-→ 输出结果
+ [1. 参数解析] ──> 解析方法、规范化 URL、自动创建带时间戳的 CSV 路径
+       │
+       ▼
+ [2. 初始化]  ──> 创建高性能 HTTP Client（禁 Keep-Alive / 忽略证书 / 禁重定向）
+       │
+       ▼
+ [3. 流式生产] ──> 启动协程 1：逐行读取字典，过滤空行/注释，通过 jobs 通道流式输出 (内存安全)
+       │
+       ▼
+ [4. 并发消费] ──> 启动 50 个 Worker 协程：竞争 jobs 通道 ──> 发起请求 ──> 结果丢入 results 通道
+       │
+       ▼
+ [5. 实时处理] ──> 主协程：实时消费 results ──> 过滤 404 ──> 终端彩色打印 ──> 实时 Flush 写入 CSV
+       │
+       ▼
+ [6. 优雅收尾] ──> 任务耗尽 ──> 关闭所有通道 ──> 打印总计并安全退出
+
+
+ main()
+ │
+ ├── 1. parseCommandLineArgs() ──────────────> normalizeBaseURL() (校验URL)
+ │                                             └─> determineOutputPath() (创建目录与生成文件名)
+ │
+ ├── 2. NewScanner() ────────────────────────> 组装高性能 http.Client (禁用Keep-Alive/证书校验)
+ │
+ ├── 3. scanner.Run() 
+ │       │
+ │       ├── 3.1 ReadWordlistStream() ───────> [go 协程] 异步逐行扫描字典文件 ──> 塞入 jobs 队列
+ │       │
+ │       └── 3.2 循环 50 次启动 Worker ──────> [go 协程 × 50] worker() 
+ │                                                │
+ │                                                └── 循环从 jobs 取出路径 ──> requestOnce() (发包)
+ │                                                                             └── 塞入 results 队列
+ │
+ ├── 4. processResults() ────────────────────> 阻塞循环读取 results 队列
+ │                                                ├── 过滤 404
+ │                                                ├── fmt.Printf() (彩色打印终端)
+ │                                                └── csv.Writer.Write() & Flush() (实时落盘)
+ │
+ └── 5. 打印 totalScanned 计数 ──────────────> 退出程序 (defer 释放文件描述符)
+
+ 下一步修改传参方式，改为-u，-m这种
+ 另外新增 -fc 过滤指定响应码， -fs过滤指定大小
